@@ -79,7 +79,7 @@ Settings are written to disk only when you release a slider, preventing unnecess
   * **Location:** Stored inside the game's profile folder created by UEVR.
   * **Saved Data:** Plugin toggle state, open GUI tabs, and all 3D Depth Boost parameters.
   * **Purpose:** Convergence requirements differ significantly across game engines and visual art styles.
-* **Universal Profile (`%APPDATA%\UnrealVRMod\UEVR\UVOSuit_Global.ini`):**
+* **Universal Profile (`%APPDATA%\UEVR\UVOSuit_Global.ini`):**
   * **Location:** Saved globally in UEVR's main configuration folder.
   * **Saved Data:** All FOV Scaling factors, axis shifts, and rotation values.
   * **Purpose:** Asymmetric FOV and optical alignment are properties of your specific VR headset and facial interface, not the game. Calibrate your optics once and use them everywhere.
