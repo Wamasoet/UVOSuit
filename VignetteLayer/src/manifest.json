@@ -1,0 +1,11 @@
+{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_UVOSUIT_vignette",
+    "disable_environment": "XR_APILAYER_UVOSUIT_vignette_DISABLE",
+    "api_version": "1.0",
+    "implementation_version": "1",
+    "description": "Ultimate VR Optics Suite - Vignette Layer",
+    "library_path": "./uvosuit_vignette.dll"
+  }
+}
