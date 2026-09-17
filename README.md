@@ -2,7 +2,7 @@
 
 # 🚀 Ultimate VR Optics Suite (UVOSuit) for UEVR
 
-**Advanced stereoscopic convergence, asymmetric FOV scaling, and independent optical axis control for Unreal Engine VR.**
+**Advanced stereoscopic convergence, asymmetric FOV scaling, independent optical axis control, and customizable lens masking for Unreal Engine VR.**
 
 [![C++](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg?style=for-the-badge&logo=c%2B%2B)](https://isocpp.org/)
 [![OpenXR](https://img.shields.io/badge/OpenXR-Hook-orange.svg?style=for-the-badge&logo=khronos)](https://www.khronos.org/openxr/)
@@ -13,93 +13,90 @@
 
 ---
 
-**Ultimate VR Optics Suite (UVOSuit)** is a high-performance C++ plugin for UEVR tailored for users who require deeper optical and stereoscopic adjustments than stock profiles provide.
+**Ultimate VR Optics Suite (UVOSuit)** is a high-performance C++ plugin for UEVR built for users looking for deep, granular calibration over optics and stereoscopic depth.
 
-By hooking directly into the OpenXR pipeline (`xrLocateViews`), UVOSuit gives you complete real-time authority over stereoscopic 3D depth, independent asymmetric FOV limits, and optical center / rotation alignment for each eye individually.
+Rather than taking a one-size-fits-all approach, the plugin operates across two distinct rendering layers: it hooks into Unreal Engine's stereo view calculation (`on_post_calculate_stereo_view_offset`) to deliver real, physical camera convergence, while intercepting the OpenXR runtime pipeline (`xrLocateViews`) to grant low-level control over projection boundaries (asymmetric FOV, optical center shifts, and axis rotation). In addition, it communicates with an external OpenXR API Layer via shared memory to render a real-time comfort vignette.
 
 ---
 
 ### 🔍 Problem & Solution
 
 * **The Problem:**  
-  While UEVR is incredible, certain games can still appear visually flat or lack physical presence. Adjusting UEVR's built-in *World Scale* increases depth perception, but at the cost of shrinking the game world geometry—resulting in an unnatural "miniature" or "dollhouse" effect.
+  Even with stereoscopy enabled, certain flat-to-VR ports can still feel visually flat or lack physical depth. While dialing down UEVR's built-in *World Scale* does increase depth perception, it shrinks the actual scale of game geometry—leaving you with an unnatural "dollhouse" or miniature effect.
 * **The Solution (3D Depth Boost):**  
-  UVOSuit introduces true stereoscopic convergence control. The plugin dynamically computes and tilts the camera stereo-pair locally (*toe-in angle*). This brings foreground objects forward, dramatizes background depth, and delivers an authentic sense of spatial volume without warping overall world scale.  
-  *(Note: At higher 3D Boost values, foreground geometry may appear slightly enlarged. You can easily balance this by nudging World Scale up in UEVR to achieve your ideal visual sweet spot).*
+  UVOSuit implements true stereoscopic convergence. Inside the engine hook (`on_post_calculate_stereo_view_offset`), the plugin recalculates the local rotation of the left and right camera views toward a focal point (*toe-in angle*). This pulls foreground assets closer to your eyes, dramatizes background depth separation, and establishes authentic spatial presence without altering world scale.  
+  *(Note: Aggressive 3D Boost values can make foreground geometry feel slightly oversized. You can dial this right back to a sweet spot by slightly increasing UEVR's World Scale slider).*
 
 ---
 
 ### ⚠️ Rendering Compatibility
 
 > [!WARNING]
-> **Native Stereo is REQUIRED for 3D Depth Boost**  
-> Alternative rendering methods (**Synchronized Sequential**, **AFR**, **AFW**) rely on temporal reprojection, frame-warping, and shared temporal buffers engineered strictly for parallel optical axes. Because 3D Boost dynamically alters camera toe-in geometry, using these alternative modes will result in severe jitter and visual tearing. Always ensure **Native Stereo** is selected in UEVR.
+> **3D Depth Boost REQUIRES Native Stereo**  
+> Alternative render methods (**Synchronized Sequential**, **AFR**, **AFW**) depend on temporal reprojection, frame warping, and shared depth buffers that explicitly assume parallel optical axes. Because 3D Boost angles the eye views inward, running these alternate modes causes immediate visual jitter and tearing. Always set UEVR to **Native Stereo** when using 3D Depth Boost.
 
-* **FOV Scaling:** Field-of-view modification and optical axis offsets work seamlessly across **all rendering backends**.
-* **Frame Generation & Engine Builds:**
+* **FOV Scaling, Offsets & Vignette:** Projection changes, optical center translation, and the API Layer lens mask execute directly within the OpenXR compositor pipeline and work across **all rendering backends**.
+* **Frame Generation & Custom Builds:**
   * Fully compatible with **OFXR Bridge**.
-  * Fully compatible with **joyehoge's UEVR builds**.
+  * Fully compatible with **joyehoge's custom UEVR builds**.
 
 ---
 
-### ✨ Core Features
+### ✨ Features
 
-* 🕶️ **3D Depth Boost (Convergence):**
-  * Fine-grained control over camera convergence.
-  * **Head-Roll Safety (Local Rotation):** All calculations are locked strictly to headset-local coordinates. You can tilt your head 90 degrees without vertical disparity or visual strain.
-  * **Safety Limits & Smooth Recovery:** A safe cap of 15% is enforced by default. Enthusiasts can check **Unlock Extreme Limits**. Unchecking the box smoothly interpolates convergence back to the safe 15% threshold to avoid eye fatigue.
-* 📐 **Comprehensive FOV Scaling:**
-  * Global scaling alongside independent adjustment for Outer (temple), Inner (nose), Top, and Bottom margins per eye.
-  * *Pixel Density Note:* Decreasing FOV renders the same native resolution into a tighter projection footprint, significantly boosting perceived PPD (pixels per degree) and sharpness. The trade-off is unrendered black borders at the periphery, as no rasterization occurs outside the restricted projection matrix.
-* 🎯 **Optical Center Shift:** Translate the projection center horizontally and vertically to compensate for facial interface fit and individual IPD variance.
-* 🔄 **Optical Axis Rotation:** Precise Pitch and Yaw angular offsets for left and right eyes independently.
+* 🕶️ **Engine-Level 3D Depth Boost (Convergence):**
+  * Fine-tune camera convergence to enhance perceived 3D depth and volume.
+  * **Head-Roll Invariance:** Convergence math (`ApplyConvergenceMath`) runs strictly in local headset space. You can tilt your head sideways at a 90-degree angle without inducing vertical disparity.
+  * **Safety Threshold & Smooth Decay:** A safe ceiling of 15% is active by default. For experimentation, you can toggle **Unlock Extreme Limits**. Disabling the toggle smoothly eases the convergence angle back down to the 15% baseline to prevent eye strain or painful ocular pressure.
+* 📐 **Comprehensive FOV Scaling (OpenXR):**
+  * Global scaling along with isolated margin controls for Outer (temples), Inner (nose), Top, and Bottom half-angles directly in `XrFovf`.
+  * *PPD Boost Note:* Narrowing the FOV forces the runtime to map the game's full render resolution into a tighter physical footprint, noticeably increasing perceived PPD (pixels per degree) and image clarity in your focal area. Unrendered regions outside the modified frustum remain black borders.
+* 🌑 **Lens Mask (API Layer Vignette):**
+  * An optical stencil rendered on top of the final output via an independent OpenXR API Layer. It masks and smooths out the hard rectangular edges produced by aggressive FOV truncations.
+  * Granular control over edge offsets (Outer, Inner, Top, Bottom), corner radius rounding, and feathering/edge softness.
+  * Zero-latency configuration: updates are pushed from the plugin UI to the API Layer instantly over Win32 Shared Memory (`CreateFileMappingA` / `MapViewOfFile`).
+  * Automatic hook registration: the plugin sets up the required `XR_API_LAYER_PATH` and `XR_ENABLE_API_LAYERS` environment variables during `on_dllmain` before OpenXR initializes.
+* 🎯 **Optical Center Shift:** Translate projection bounds horizontally and vertically.
+* 🔄 **Optical Axis Rotation:** Direct orientation adjustment (`XrPosef.orientation`) by multiplying the view quaternion with an optimized rotation cache (independent Pitch and Yaw per eye).
+* 📊 **Smart Diagnostics:** An integrated status monitor right in the ImGui window. It tracks whether `xrLocateViews` is actively firing, validates the IPC shared memory buffer, and prints color-coded error codes if something fails.
 
 ---
 
-### ⌨️ Hotkeys & Controls
+### ⌨️ Hotkeys & Shortcuts
 
-| Shortcut | Description |
+| Hotkey | Action |
 | :--- | :--- |
-| **`F2`** | Toggle UVOSuit interface |
+| **`F2`** | Toggle UVOSuit UI window |
 | **`F3`** | Toggle custom FOV limits on / off |
 | **`End`** | Toggle 3D Depth Boost on / off |
-| **`PageUp` / `PageDown`** | Increase / decrease 3D Boost intensity on the fly |
+| **`PageUp` / `PageDown`** | Increase / decrease 3D Boost strength |
 
 > [!TIP]
-> * Hold **`Ctrl`** and **click** on any numeric value to type a precise number directly.
-> * Hold **`Shift`** while adjusting any slider to accelerate the adjustment speed.
+> * Hold **`Ctrl`** and **left-click** any numeric slider to type in a value directly via keyboard.
+> * Hold **`Shift`** while dragging any slider to step through values faster.
 
 ---
 
-### 💾 Smart I/O Persistence
+### 💾 Smart Persistence (I/O)
 
-Settings are written to disk only when you release a slider, preventing unnecessary disk I/O during tuning. Configurations are split logically:
+Settings only flush to disk when you release the mouse button (`IsItemDeactivatedAfterEdit`), keeping the render loop free from frame drops and redundant disk writes. Configurations are split logically:
 
-* **Game Profile (`UVOSuit_Local.ini`):**
-  * **Location:** Stored inside the game's profile folder created by UEVR.
-  * **Saved Data:** Plugin toggle state, open GUI tabs, and all 3D Depth Boost parameters.
-  * **Purpose:** Convergence requirements differ significantly across game engines and visual art styles.
-* **Universal Profile (`%APPDATA%\UEVR\UVOSuit_Global.ini`):**
-  * **Location:** Saved globally in UEVR's main configuration folder.
-  * **Saved Data:** All FOV Scaling factors, axis shifts, and rotation values.
-  * **Purpose:** Asymmetric FOV and optical alignment are properties of your specific VR headset and facial interface, not the game. Calibrate your optics once and use them everywhere.
+* **Per-Game Config (`UVOSuit_Local.ini`):**
+  * **Path:** Located directly inside the game's dedicated UEVR profile folder (`get_persistent_dir`).
+  * **Saved State:** Plugin master toggle, open UI subtrees, and all 3D Depth Boost values.
+* **Global Config (`%APPDATA%\UEVR\UVOSuit_Global.ini`):**
+  * **Path:** Stored globally inside UEVR's main AppData directory.
+  * **Saved State:** All FOV multipliers, optical center shifts, axis rotation angles, and Lens Mask parameters.
 
 ---
 
 ### 🛠️ Practical Tips & Troubleshooting
 
-* **Applying FOV Adjustments:**  
-  Live changes to projection bounds may cause temporary distortion while dragging sliders. To cleanly refresh the projection matrix, click **Reinitialize Runtime** in the UEVR dashboard (or trigger an in-game camera shift / cutscene transition, e.g., in *Little Nightmares II*).  
-  *Note:* Frequently pressing *Reinitialize Runtime* can cause crashes in heavier titles. It is recommended to dial in base FOV values in stable game areas.
+* **Applying FOV Modifications:**  
+  Tweaking projection boundaries in real time can introduce visual warping or mismatched view bounds. To cleanly reset and force the engine to recalculate its projection matrices, click **Reinitialize Runtime** inside the UEVR dashboard.  
+  *Note:* Triggering *Reinitialize Runtime* in certain titles (such as *Atomic Heart* or *Clair Obscur: Expedition 33*) can trigger a crash to desktop (CTD). It is best practice to dial in your baseline FOV from a pause menu or stable scene.
 * **Visual Artifacts:**  
-  Extremely high convergence angles or radical FOV values can theoretically interact with screen-space shadows or object occlusion culling. During testing across titles like *Atomic Heart*, *Lies of P*, *Little Nightmares II*, and *Stray*, no critical pipeline anomalies were observed under normal calibrated use.
-
----
-
-### 🗺️ Roadmap (WIP)
-
-- [ ] Status panel diagnostics: automated OpenXR initialization error reporting and context logs.
-- [ ] Customizable Comfort Vignette to visually blend outer projection boundaries when using aggressive FOV narrowing.
+  Extreme convergence angles or radical projection crops can occasionally conflict with screen-space passes (SSAO, SSR) or engine-level occlusion culling. Throughout testing in games like *Atomic Heart*, *Lies of P*, *Little Nightmares II*, and *Stray*, properly calibrated values ran clean without game-breaking pipeline bugs.
 
 ---
 
@@ -110,5 +107,5 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 ---
 
 ### 🤝 Credits
-* **Praydog** for [UEVR](https://github.com/praydog/UEVR).
-* The UEVR testing community for ongoing feedback and insights.
+* **Praydog** for the incredible [UEVR](https://github.com/praydog/UEVR) framework.
+* The UEVR testing and modding community for ongoing feedback and validation.
