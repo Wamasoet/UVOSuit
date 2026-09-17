@@ -110,4 +110,4 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 * **Praydog** for the incredible [UEVR](https://github.com/praydog/UEVR) framework.
 * The UEVR testing and modding community for ongoing feedback and validation.
 * **Ybalrid** — for the initial OpenXR API Layer project template structure.
-* * **lobotomy-x** — for the initial plugin template structure from UEVR-Dev-Utils.
+* **lobotomy-x** — for the initial plugin template structure from UEVR-Dev-Utils.
