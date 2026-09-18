@@ -32,10 +32,14 @@ Rather than taking a one-size-fits-all approach, the plugin operates across two 
 ### ⚠️ Rendering Compatibility
 
 > [!WARNING]
+> **Oculus Link Incompatibility (FOV & Shifts)**  
+> Custom FOV Scaling and Optical Center Shifts are **not supported** when using Oculus Link (Meta Quest Link). The Oculus OpenXR runtime enforces strict hardware FOV limits and utilizes aggressive Asynchronous Timewarp (ATW), which causes heavy visual distortion when attempting to manipulate projection matrices. For full compatibility with optics manipulation, please use **VDXR (Virtual Desktop)** or **Steam Link / SteamVR**.
+
+> [!WARNING]
 > **3D Depth Boost REQUIRES Native Stereo**  
 > Alternative render methods (**Synchronized Sequential**, **AFR**, **AFW**) depend on temporal reprojection, frame warping, and shared depth buffers that explicitly assume parallel optical axes. Because 3D Boost angles the eye views inward, running these alternate modes causes immediate visual jitter and tearing. Always set UEVR to **Native Stereo** when using 3D Depth Boost.
 
-* **FOV Scaling, Offsets & Vignette:** Projection changes, optical center translation, and the API Layer lens mask execute directly within the OpenXR compositor pipeline and work across **all rendering backends**.
+* **FOV Scaling, Offsets & Vignette:** Projection changes, optical center translation, and the API Layer lens mask execute directly within the OpenXR compositor pipeline and work across **all rendering backends** (excluding Oculus Link limitations noted above).
 * **Frame Generation & Custom Builds:**
   * Fully compatible with **OFXR Bridge**.
   * Fully compatible with **joyehoge's custom UEVR builds**.
@@ -55,7 +59,7 @@ Rather than taking a one-size-fits-all approach, the plugin operates across two 
   * An optical stencil rendered on top of the final output via an independent OpenXR API Layer. It masks and smooths out the hard rectangular edges produced by aggressive FOV truncations.
   * Granular control over edge offsets (Outer, Inner, Top, Bottom), corner radius rounding, and feathering/edge softness.
   * Zero-latency configuration: updates are pushed from the plugin UI to the API Layer instantly over Win32 Shared Memory (`CreateFileMappingA` / `MapViewOfFile`).
-  * Automatic hook registration: the plugin sets up the required `XR_API_LAYER_PATH` and `XR_ENABLE_API_LAYERS` environment variables during `on_dllmain` before OpenXR initializes.
+  * **Zero Dependencies & Safe Hooking:** HLSL shaders are precompiled into bytecode, requiring zero additional DirectX redistributables from the user. The plugin also safely appends to the `XR_API_LAYER_PATH` environment variable without overwriting other active OpenXR layers (like eye tracking or VDXR).
 * 🎯 **Optical Center Shift:** Translate projection bounds horizontally and vertically.
 * 🔄 **Optical Axis Rotation:** Direct orientation adjustment (`XrPosef.orientation`) by multiplying the view quaternion with an optimized rotation cache (independent Pitch and Yaw per eye).
 * 📊 **Smart Diagnostics:** An integrated status monitor right in the ImGui window. It tracks whether `xrLocateViews` is actively firing, validates the IPC shared memory buffer, and prints color-coded error codes if something fails.
@@ -96,7 +100,7 @@ Settings only flush to disk when you release the mouse button (`IsItemDeactivate
   Tweaking projection boundaries in real time can introduce visual warping or mismatched view bounds. To cleanly reset and force the engine to recalculate its projection matrices, click **Reinitialize Runtime** inside the UEVR dashboard.  
   *Note:* Triggering *Reinitialize Runtime* in certain titles (such as *Atomic Heart* or *Clair Obscur: Expedition 33*) can trigger a crash to desktop (CTD). It is best practice to dial in your baseline FOV from a pause menu or stable scene.
 * **Visual Artifacts:**  
-  Extreme convergence angles or radical projection crops can occasionally conflict with screen-space passes (SSAO, SSR) or engine-level occlusion culling. Throughout testing in games like *Atomic Heart*, *Lies of P*, *Little Nightmares II*, and *Stray*, properly calibrated values ran clean without game-breaking pipeline bugs.
+  Extreme convergence angles or radical projection crops can occasionally conflict with screen-space passes (SSAO, SSR) or engine-level occlusion culling. Throughout testing, properly calibrated values ran clean without game-breaking pipeline bugs.
 
 ---
 
