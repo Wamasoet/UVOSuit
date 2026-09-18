@@ -390,6 +390,25 @@ void ApplyConvergenceMath(T& pitch, T& yaw, T& roll, float boost_angle, bool is_
     roll = std::atan2(-new_right_z, up_z) * static_cast<T>(180.0 / PI_D);
 }
 
+void AppendEnvVarSafe(const char* name, const std::string& new_val) {
+    DWORD size = GetEnvironmentVariableA(name, nullptr, 0);
+    if (size > 0) {
+        std::string current_val(size, '\0');
+        GetEnvironmentVariableA(name, &current_val[0], size);
+        current_val.resize(size - 1); // Убираем нуль-терминатор
+
+        // Проверяем, не добавлен ли уже наш путь, чтобы избежать дубликатов
+        if (current_val.find(new_val) == std::string::npos) {
+            std::string combined = current_val + ";" + new_val;
+            SetEnvironmentVariableA(name, combined.c_str());
+        }
+    }
+    else {
+        // Если переменной не было, просто создаем её
+        SetEnvironmentVariableA(name, new_val.c_str());
+    }
+}
+
 // =========================================================================
 // MAIN PLUGIN CLASS
 // =========================================================================
@@ -417,11 +436,10 @@ public:
             }
 
             // --- AUTOMATIC OPENXR API LAYER LOADING ---
-            // Set environment variables before the game or UEVR initializes OpenXR
             if (const char* appdata = std::getenv("APPDATA")) {
                 std::string layer_path = std::string(appdata) + "\\UEVR\\VignetteLayer";
-                SetEnvironmentVariableA("XR_API_LAYER_PATH", layer_path.c_str());
-                SetEnvironmentVariableA("XR_ENABLE_API_LAYERS", "XR_APILAYER_UVOSUIT_vignette");
+                AppendEnvVarSafe("XR_API_LAYER_PATH", layer_path);
+                AppendEnvVarSafe("XR_ENABLE_API_LAYERS", "XR_APILAYER_UVOSUIT_vignette");
             }
         }
     }
