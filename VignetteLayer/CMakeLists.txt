@@ -56,6 +56,21 @@ configure_file(
 #TODO make this a bit nicer
 file(GLOB layer_src CONFIGURE_DEPENDS src/*)
 
+
+set_source_files_properties(src/VignetteVS.hlsl PROPERTIES
+    VS_SHADER_TYPE "Vertex"
+    VS_SHADER_MODEL "5.0"
+    VS_SHADER_OUTPUT_HEADER_FILE "%(RelativeDir)%(Filename).h"
+    VS_SHADER_VARIABLE_NAME "g_VignetteVS"
+)
+
+set_source_files_properties(src/VignettePS.hlsl PROPERTIES
+    VS_SHADER_TYPE "Pixel"
+    VS_SHADER_MODEL "5.0"
+    VS_SHADER_OUTPUT_HEADER_FILE "%(RelativeDir)%(Filename).h"
+    VS_SHADER_VARIABLE_NAME "g_VignettePS"
+)
+
 add_library(${library_name} SHARED ${layer_src} ${CMAKE_SOURCE_DIR}/README.md)
 target_include_directories(${library_name} PRIVATE
 	${CMAKE_SOURCE_DIR}/OpenXR-SDK/src/loader
