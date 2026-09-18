@@ -1,3 +1,6 @@
+// Copyright (c) 2026 [Wamasoet]
+// Ultimate VR Optics Suite (UVOSuit) - Core Plugin
+
 #define NOMINMAX
 #include <Windows.h>
 #include <string>
@@ -390,26 +393,29 @@ void ApplyConvergenceMath(T& pitch, T& yaw, T& roll, float boost_angle, bool is_
     roll = std::atan2(-new_right_z, up_z) * static_cast<T>(180.0 / PI_D);
 }
 
+/**
+ * @brief Safely appends a value to an environment variable.
+ * @param name The name of the environment variable.
+ * @param new_val The value to append.
+ */
 void AppendEnvVarSafe(const char* name, const std::string& new_val) {
     DWORD size = GetEnvironmentVariableA(name, nullptr, 0);
     if (size > 0) {
         std::string current_val(size, '\0');
         GetEnvironmentVariableA(name, &current_val[0], size);
-        current_val.resize(size - 1); // Убираем нуль-терминатор
+        current_val.resize(size - 1); // Remove the null-terminator
 
-        // Проверяем, не добавлен ли уже наш путь, чтобы избежать дубликатов
+        // Check if the path is already added to prevent duplicates
         if (current_val.find(new_val) == std::string::npos) {
             std::string combined = current_val + ";" + new_val;
             SetEnvironmentVariableA(name, combined.c_str());
         }
     }
     else {
-        // Если переменной не было, просто создаем её
+        // If the variable does not exist, simply create it
         SetEnvironmentVariableA(name, new_val.c_str());
     }
-}
-
-// =========================================================================
+}// =========================================================================
 // MAIN PLUGIN CLASS
 // =========================================================================
 
@@ -460,7 +466,6 @@ public:
                 UVOSuit::g_hMapFile_Vignette, FILE_MAP_ALL_ACCESS, 0, 0,
                 sizeof(UVOSuit::VignetteConfig)
             );
-
         }
         else {
             // Record the error in the diagnostic state
@@ -481,7 +486,7 @@ public:
             g_d3d11.render_imgui();
         }
         else if (renderer_data->renderer_type == UEVR_RENDERER_D3D12) {
-            auto cmd_queue = (ID3D12CommandQueue*)renderer_data->command_queue;
+            auto cmd_queue = static_cast<ID3D12CommandQueue*>(renderer_data->command_queue);
             if (cmd_queue != nullptr) {
                 if (!vr_active) ImGui_ImplDX12_NewFrame();
                 g_d3d12.render_imgui();
@@ -552,7 +557,6 @@ public:
     }
 
     void on_post_calculate_stereo_view_offset(UEVR_StereoRenderingDeviceHandle device, int view_index, float world_to_meters, UEVR_Vector3f* position, UEVR_Rotatorf* rotation, bool is_double) override {
-
         if (!UVOSuit::g_Config.mod_enabled || UVOSuit::g_Config.actual_convergence_angle == 0.0f) return;
 
         const bool is_left_eye = is_double ? (view_index == 0) : (view_index == 1);
@@ -563,11 +567,11 @@ public:
         const float actual_boost_angle = (UVOSuit::g_Config.actual_convergence_angle / 100.0f) * 10.0f;
 
         if (is_double) {
-            auto rot_d = (UEVR_Rotatord*)rotation;
+            auto rot_d = reinterpret_cast<UEVR_Rotatord*>(rotation);
             ApplyConvergenceMath(rot_d->pitch, rot_d->yaw, rot_d->roll, actual_boost_angle, is_left_eye);
         }
         else {
-            auto rot_f = (UEVR_Rotatorf*)rotation;
+            auto rot_f = reinterpret_cast<UEVR_Rotatorf*>(rotation);
             ApplyConvergenceMath(rot_f->pitch, rot_f->yaw, rot_f->roll, actual_boost_angle, is_left_eye);
         }
     }
@@ -782,7 +786,7 @@ private:
 
         const auto renderer_data = API::get()->param()->renderer;
         DXGI_SWAP_CHAIN_DESC swap_desc{};
-        ((IDXGISwapChain*)renderer_data->swapchain)->GetDesc(&swap_desc);
+        (static_cast<IDXGISwapChain*>(renderer_data->swapchain))->GetDesc(&swap_desc);
         m_wnd = swap_desc.OutputWindow;
 
         if (!ImGui_ImplWin32_Init(m_wnd)) return false;
