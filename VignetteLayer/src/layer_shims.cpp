@@ -1,3 +1,5 @@
+// Copyright (c) 2026 [Wamasoet]
+// Ultimate VR Optics Suite (UVOSuit) - Vignette Layer
 // Extended for Ultimate VR Optics Suite
 
 #include <vector>

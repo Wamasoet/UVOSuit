@@ -1,3 +1,6 @@
+// Copyright (c) 2026 [Wamasoet]
+// Ultimate VR Optics Suite (UVOSuit) - Vignette Layer
+
 #pragma once
 
 #include <d3d12.h>
@@ -60,7 +63,4 @@ private:
     UINT64 m_currentFenceValue = 0;
     HANDLE m_fenceEvent = nullptr;
     UINT m_bufferIndex = 0;
-
-    /// @brief Embedded HLSL shader source code
-    static const std::string s_shaderCode;
 };

@@ -1,66 +1,12 @@
+// Copyright (c) 2026 [Wamasoet]
+// Ultimate VR Optics Suite (UVOSuit) - Vignette Layer
+
 #include "render_dx12.hpp"
-#include <d3dcompiler.h>
 #include <iostream>
+#include "VignetteVS.h"
+#include "VignettePS.h"
 
-#pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "d3d12.lib")
-
-// =========================================================================
-// EMBEDDED HLSL SHADER SOURCE CODE
-// =========================================================================
-const std::string VignetteRendererDX12::s_shaderCode = R"(
-cbuffer VignetteBuffer : register(b0) {
-    float edge_outer;
-    float edge_inner;
-    float edge_top;
-    float edge_bottom;
-    float softness;
-    float corner_radius;
-    float isLeftEye;
-    float padding;
-};
-
-struct VS_OUTPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-};
-
-VS_OUTPUT VSMain(uint id : SV_VertexID) {
-    VS_OUTPUT output;
-    // Generate a full-screen triangle using vertex ID
-    output.uv = float2((id << 1) & 2, id & 2);
-    output.pos = float4(output.uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-    return output;
-}
-
-float4 PSMain(VS_OUTPUT input) : SV_Target {
-    // 1. Asymmetry: Determine temporal (outer) and nasal (inner) edges
-    float left_edge  = (isLeftEye > 0.5) ? edge_outer : edge_inner;
-    float right_edge = (isLeftEye > 0.5) ? edge_inner : edge_outer;
-    
-    // 2. Define clear window boundaries
-    float2 minBound = float2(left_edge, edge_top);
-    float2 maxBound = float2(1.0 - right_edge, 1.0 - edge_bottom);
-    
-    // 3. Calculate bounding box center and half-size
-    float2 boxCenter = (minBound + maxBound) * 0.5;
-    float2 boxHalfSize = (maxBound - minBound) * 0.5;
-    
-    // 4. Clamp corner radius to prevent distortion
-    float max_radius = min(boxHalfSize.x, boxHalfSize.y);
-    float radius = min(corner_radius, max_radius);
-    
-    // 5. Signed Distance Field (SDF) evaluation
-    float2 p = input.uv - boxCenter;
-    float2 d = abs(p) - boxHalfSize + radius;
-    float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-    
-    // 6. Smooth the vignette edge based on softness parameter
-    float alpha = smoothstep(0.0, softness + 0.0001, dist);
-    
-    return float4(0.0, 0.0, 0.0, alpha);
-}
-)";
 
 VignetteRendererDX12::~VignetteRendererDX12() {
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
@@ -88,7 +34,7 @@ bool VignetteRendererDX12::Initialize(ID3D12Device* device) {
 
     ComPtr<ID3DBlob> signature, error;
     if (FAILED(D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error))) {
-        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
+        if (error) OutputDebugStringA(static_cast<char*>(error->GetBufferPointer()));
         return false;
     }
     if (FAILED(device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature)))) {
@@ -140,23 +86,13 @@ void VignetteRendererDX12::Render(ID3D12CommandQueue* commandQueue, ID3D12Resour
 
     // 2. Lazy initialization of the Pipeline State Object (PSO)
     if (!m_pipelineState) {
-        ComPtr<ID3DBlob> vsBlob, psBlob, errorBlob;
-        UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-
-        if (FAILED(D3DCompile(s_shaderCode.c_str(), s_shaderCode.size(), nullptr, nullptr, nullptr, "VSMain", "vs_5_0", flags, 0, &vsBlob, &errorBlob))) {
-            if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-            return;
-        }
-        if (FAILED(D3DCompile(s_shaderCode.c_str(), s_shaderCode.size(), nullptr, nullptr, nullptr, "PSMain", "ps_5_0", flags, 0, &psBlob, &errorBlob))) {
-            if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-            return;
-        }
-
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { nullptr, 0 };
         psoDesc.pRootSignature = m_rootSignature.Get();
-        psoDesc.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
-        psoDesc.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
+
+        // IMPORTANT: Pass bytecodes directly from the included header files
+        psoDesc.VS = { g_VignetteVS, sizeof(g_VignetteVS) };
+        psoDesc.PS = { g_VignettePS, sizeof(g_VignettePS) };
 
         D3D12_RENDER_TARGET_BLEND_DESC blendDesc = {};
         blendDesc.BlendEnable = TRUE;
@@ -217,7 +153,7 @@ void VignetteRendererDX12::Render(ID3D12CommandQueue* commandQueue, ID3D12Resour
     m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
     // 5. Set Viewport and Scissor Rect
-    D3D12_VIEWPORT vp = { (float)rectX, (float)rectY, (float)rectW, (float)rectH, 0.0f, 1.0f };
+    D3D12_VIEWPORT vp = { static_cast<float>(rectX), static_cast<float>(rectY), static_cast<float>(rectW), static_cast<float>(rectH), 0.0f, 1.0f };
     D3D12_RECT scissor = { rectX, rectY, rectX + rectW, rectY + rectH };
     m_commandList->RSSetViewports(1, &vp);
     m_commandList->RSSetScissorRects(1, &scissor);

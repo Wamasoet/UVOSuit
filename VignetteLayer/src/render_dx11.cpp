@@ -1,70 +1,13 @@
+// Copyright (c) 2026 [Wamasoet]
+// Ultimate VR Optics Suite (UVOSuit) - Vignette Layer
+
 #include "render_dx11.hpp"
-#include <d3dcompiler.h>
 #include <iostream>
+#include "VignetteVS.h"
+#include "VignettePS.h"
 
-// Link the DirectX shader compiler library
-#pragma comment(lib, "d3dcompiler.lib")
-
-// =========================================================================
-// EMBEDDED HLSL SHADER SOURCE CODE
-// =========================================================================
-const std::string VignetteRendererDX11::s_shaderCode = R"(
-cbuffer VignetteBuffer : register(b0) {
-    float edge_outer;
-    float edge_inner;
-    float edge_top;
-    float edge_bottom;
-    float softness;
-    float corner_radius;
-    float isLeftEye;
-    float padding;
-};
-
-struct VS_OUTPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-};
-
-VS_OUTPUT VSMain(uint id : SV_VertexID) {
-    VS_OUTPUT output;
-    // Generate a full-screen triangle using vertex ID
-    output.uv = float2((id << 1) & 2, id & 2);
-    output.pos = float4(output.uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-    return output;
-}
-
-float4 PSMain(VS_OUTPUT input) : SV_Target {
-    // 1. Asymmetry: Determine the temporal (outer) and nasal (inner) edges based on the eye
-    float left_edge  = (isLeftEye > 0.5) ? edge_outer : edge_inner;
-    float right_edge = (isLeftEye > 0.5) ? edge_inner : edge_outer;
-    
-    // 2. Define the clear window coordinates (areas without vignette masking)
-    float2 minBound = float2(left_edge, edge_top);
-    float2 maxBound = float2(1.0 - right_edge, 1.0 - edge_bottom);
-    
-    // 3. Calculate the center and half-size of the bounding box
-    float2 boxCenter = (minBound + maxBound) * 0.5;
-    float2 boxHalfSize = (maxBound - minBound) * 0.5;
-    
-    // 4. Clamp corner radius to prevent shape distortion if extreme values are provided
-    float max_radius = min(boxHalfSize.x, boxHalfSize.y);
-    float radius = min(corner_radius, max_radius);
-    
-    // 5. Signed Distance Field (SDF) for the rounded rectangle
-    float2 p = input.uv - boxCenter;
-    float2 d = abs(p) - boxHalfSize + radius;
-    
-    // dist < 0 inside the window, 0 on the exact edge, and > 0 in the masked area
-    float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-    
-    // 6. Soft lens edge blending
-    // Pixels where dist <= 0 become fully transparent (alpha = 0)
-    // Pixels where dist > softness become fully opaque (alpha = 1)
-    float alpha = smoothstep(0.0, softness + 0.0001, dist);
-    
-    return float4(0.0, 0.0, 0.0, alpha);
-}
-)";
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 VignetteRendererDX11::~VignetteRendererDX11() {}
 
@@ -72,25 +15,15 @@ bool VignetteRendererDX11::Initialize(ID3D11Device* device) {
     if (m_initialized) return true;
     if (!device) return false;
 
-    ComPtr<ID3DBlob> vsBlob, psBlob, errorBlob;
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-#if defined(_DEBUG)
-    flags |= D3DCOMPILE_DEBUG;
-#endif
-
-    // Compile Vertex Shader
-    if (FAILED(D3DCompile(s_shaderCode.c_str(), s_shaderCode.size(), nullptr, nullptr, nullptr, "VSMain", "vs_5_0", flags, 0, &vsBlob, &errorBlob))) {
-        if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+    // Create the vertex shader directly from the compiled bytecode array
+    if (FAILED(device->CreateVertexShader(g_VignetteVS, sizeof(g_VignetteVS), nullptr, &m_vertexShader))) {
         return false;
     }
-    device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &m_vertexShader);
 
-    // Compile Pixel Shader
-    if (FAILED(D3DCompile(s_shaderCode.c_str(), s_shaderCode.size(), nullptr, nullptr, nullptr, "PSMain", "ps_5_0", flags, 0, &psBlob, &errorBlob))) {
-        if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+    // Create the pixel shader directly from the compiled bytecode array
+    if (FAILED(device->CreatePixelShader(g_VignettePS, sizeof(g_VignettePS), nullptr, &m_pixelShader))) {
         return false;
     }
-    device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &m_pixelShader);
 
     // Create Constant Buffer
     D3D11_BUFFER_DESC cbDesc = {};
@@ -112,7 +45,7 @@ bool VignetteRendererDX11::Initialize(ID3D11Device* device) {
     blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     device->CreateBlendState(&blendDesc, &m_blendState);
 
-    // Disable Z-buffer (render over everything)
+    // Disable Z-buffer (render over everything as an overlay)
     D3D11_DEPTH_STENCIL_DESC dsDesc = {};
     dsDesc.DepthEnable = FALSE;
     dsDesc.StencilEnable = FALSE;
@@ -169,7 +102,7 @@ void VignetteRendererDX11::Render(ID3D11DeviceContext* context, ID3D11Texture2D*
     // Map and update the vignette parameters to the GPU
     D3D11_MAPPED_SUBRESOURCE mappedRes;
     if (SUCCEEDED(context->Map(m_constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedRes))) {
-        VignetteConstantBuffer* data = (VignetteConstantBuffer*)mappedRes.pData;
+        VignetteConstantBuffer* data = static_cast<VignetteConstantBuffer*>(mappedRes.pData);
         data->edge_outer = edge_outer;
         data->edge_inner = edge_inner;
         data->edge_top = edge_top;
@@ -186,7 +119,7 @@ void VignetteRendererDX11::Render(ID3D11DeviceContext* context, ID3D11Texture2D*
     ComPtr<ID3D11DepthStencilView> oldDSV;
     context->OMGetRenderTargets(1, &oldRTV, &oldDSV);
 
-    // Set our texture as the render target
+    // Set our texture as the active render target
     context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
 
     // Apply render states
@@ -201,12 +134,12 @@ void VignetteRendererDX11::Render(ID3D11DeviceContext* context, ID3D11Texture2D*
     context->RSSetState(m_rasterizerState.Get());
 
     // Render strictly within the bounds of the current eye viewport
-    D3D11_VIEWPORT vp = { (float)rectX, (float)rectY, (float)rectW, (float)rectH, 0.0f, 1.0f };
+    D3D11_VIEWPORT vp = { static_cast<float>(rectX), static_cast<float>(rectY), static_cast<float>(rectW), static_cast<float>(rectH), 0.0f, 1.0f };
     context->RSSetViewports(1, &vp);
 
     // Draw a single full-screen triangle
     context->Draw(3, 0);
 
-    // Restore previous render states
+    // Restore previous render states seamlessly
     context->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());
 }

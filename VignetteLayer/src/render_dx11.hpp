@@ -1,3 +1,6 @@
+// Copyright (c) 2026 [Wamasoet]
+// Ultimate VR Optics Suite (UVOSuit) - Vignette Layer
+
 #pragma once
 
 #include <d3d11.h>
@@ -68,7 +71,4 @@ private:
     ComPtr<ID3D11RasterizerState> m_rasterizerState;
     ComPtr<ID3D11BlendState> m_blendState;
     ComPtr<ID3D11DepthStencilState> m_depthState;
-
-    /// @brief Embedded HLSL shader source code
-    static const std::string s_shaderCode;
 };
