@@ -52,7 +52,7 @@ Rather than taking a one-size-fits-all approach, the plugin operates across two 
 * 🌑 **Lens Mask (API Layer Vignette):** An optical stencil rendered on top of the final output via an independent OpenXR API Layer to smooth hard rectangular edges. Features granular control over offsets, corner radius, and softness with zero-latency configuration via Win32 Shared Memory.
   * **Zero Dependencies & Safe Hooking:** The plugin safely registers the `XR_API_LAYER_PATH` environment variable **only** after utilizing strict WinAPI validation (`CreateFileA` with read/write sharing) to confirm file presence, eliminating OpenXR initialization crashes (Error -36).
 * 🎯 **Optical Center Shift & Axis Rotation:** Translate projection bounds horizontally and vertically, or apply direct orientation adjustment (`XrPosef.orientation`) via an optimized rotation cache.
-* 📊 **Smart Diagnostics:** An integrated UI monitor independently tracks and displays the real-time health of OpenXR Hooks, IPC Shared Memory, and API Layer files.
+* 📊 **Smart Diagnostics Overview:** Replaced the legacy single-error reporting system with a real-time, multi-module UI monitor. It independently tracks and displays the live status of OpenXR Hooks, IPC Shared Memory, and API Layer files directly in the panel.
 
 ---
 
