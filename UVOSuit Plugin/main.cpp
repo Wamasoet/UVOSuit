@@ -62,7 +62,7 @@ typedef MyXrResult(*PFN_xrLocateViews)(MyXrSession session, const MyXrViewLocate
 typedef FARPROC(WINAPI* PFN_GetProcAddress)(HMODULE, LPCSTR);
 
 // =========================================================================
-// MATH OPERATIONS (Now static to fix compiler warnings)
+// MATH OPERATIONS 
 // =========================================================================
 
 static MyXrQuaternionf MultiplyQuat(const MyXrQuaternionf& q1, const MyXrQuaternionf& q2) noexcept {
@@ -117,6 +117,11 @@ namespace UVOSuit {
         bool enable_3d_boost = false;
         float convergence_angle = 0.0f;
         std::atomic<float> actual_convergence_angle = 0.0f;
+
+        float eye_dominance_shift = 0.0f;
+        std::atomic<float> actual_dominance_shift = 0.0f;
+        bool enable_dominance_shift = false;
+
         bool unlock_limits = false;
 
         float global_fov_scale = 1.0f;
@@ -134,6 +139,7 @@ namespace UVOSuit {
         float rot_right_pitch = 0.0f, rot_right_yaw = 0.0f;
 
         bool ui_fov_opened = true;
+        bool ui_shift_opened = false;
         bool ui_asym_opened = false;
         bool ui_shifts_opened = false;
         bool ui_rot_opened = false;
@@ -207,7 +213,7 @@ namespace UVOSuit {
 }
 
 // =========================================================================
-// OPENXR HOOKS (Now static to fix compiler warnings)
+// OPENXR HOOKS
 // =========================================================================
 
 static MyXrResult Hook_xrLocateViews(MyXrSession session, const MyXrViewLocateInfo* viewLocateInfo, MyXrViewState* viewState, uint32_t viewCapacityInput, uint32_t* viewCountOutput, MyXrView* views) {
@@ -217,7 +223,6 @@ static MyXrResult Hook_xrLocateViews(MyXrSession session, const MyXrViewLocateIn
         if (UVOSuit::g_Config.mod_enabled.load(std::memory_order_relaxed) &&
             UVOSuit::g_Config.enable_custom_fov.load(std::memory_order_relaxed)) {
 
-            // Блокировка мьютекса удалена для Lock-Free чтения
             const float scale = UVOSuit::g_Cache.fov_scale;
             views[0].fov.angleLeft *= (scale * UVOSuit::g_Cache.outer_l);
             views[0].fov.angleRight *= (scale * UVOSuit::g_Cache.inner_l);
@@ -282,7 +287,7 @@ static FARPROC WINAPI Hook_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 }
 
 // =========================================================================
-// CONFIGURATION I/O PATHS & PARSERS (Now static)
+// CONFIGURATION I/O PATHS & PARSERS
 // =========================================================================
 
 static std::string GetGlobalIniPath() {
@@ -323,8 +328,23 @@ namespace ConfigHelper {
 // =========================================================================
 
 template <typename T>
-void ApplyConvergenceMath(T& pitch, T& yaw, T& roll, float boost_angle, bool is_left_eye) {
-    const float boost_rad = boost_angle * PI_F / 180.0f;
+void ApplyConvergenceMath(T& pitch, T& yaw, T& roll, float boost_angle, float shift_angle, bool is_left_eye) {
+    // Высчитываем итоговый угол для конкретного глаза с учетом доминантности
+    // Если shift отрицательный (сдвиг влево), левый глаз расслабляется, правый остается на базе
+    // Если shift положительный (сдвиг вправо), правый расслабляется, левый остается на базе
+    float effective_boost = boost_angle;
+
+    if (is_left_eye) {
+        effective_boost -= std::max(0.0f, -shift_angle);
+    }
+    else {
+        effective_boost -= std::max(0.0f, shift_angle);
+    }
+
+    // Защита от ухода в отрицательную конвергенцию, если смещение больше самого буста
+    effective_boost = std::max(0.0f, effective_boost);
+
+    const float boost_rad = effective_boost * PI_F / 180.0f;
     const float A = is_left_eye ? boost_rad : -boost_rad;
 
     const float p = static_cast<float>(pitch) * PI_F / 180.0f;
@@ -382,7 +402,6 @@ public:
     UVOSuitPlugin() = default;
 
     ~UVOSuitPlugin() override {
-        // Безопасное снятие хуков при выгрузке плагина, чтобы игра не крашилась
         if (UVOSuit::g_GetProcAddress_original) {
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
@@ -400,7 +419,6 @@ public:
         }
     }
 
-    // Внедрена защита от ошибки -36 через CreateFileA
     static bool CanReadFile(const std::string& path) {
         HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
@@ -460,9 +478,10 @@ public:
     }
 
     void on_initialize() override {
-        ImGui::CreateContext(); // Безопасное создание контекста
+        ImGui::CreateContext();
         load_configs();
         UVOSuit::g_Config.actual_convergence_angle.store(UVOSuit::g_Config.convergence_angle, std::memory_order_relaxed);
+        UVOSuit::g_Config.actual_dominance_shift.store(UVOSuit::g_Config.eye_dominance_shift, std::memory_order_relaxed);
 
         SECURITY_ATTRIBUTES sa;
         sa.nLength = sizeof(SECURITY_ATTRIBUTES);
@@ -545,7 +564,6 @@ public:
             g_d3d12 = {};
         }
         m_initialized = false;
-        // Намеренно не вызываем ImGui::DestroyContext(), чтобы избежать фатального краша
     }
 
     void on_post_render_vr_framework_dx11(ID3D11DeviceContext* context, ID3D11Texture2D* texture, ID3D11RenderTargetView* rtv) override {
@@ -568,19 +586,26 @@ public:
     }
 
     void on_pre_engine_tick(API::UGameEngine* engine, float delta) override {
-        // Блокировка мьютекса удалена
         float target_angle = UVOSuit::g_Config.enable_3d_boost ? UVOSuit::g_Config.convergence_angle : 0.0f;
+        float target_shift = (UVOSuit::g_Config.enable_3d_boost && UVOSuit::g_Config.enable_dominance_shift) ? UVOSuit::g_Config.eye_dominance_shift : 0.0f;
+
         float current_actual = UVOSuit::g_Config.actual_convergence_angle.load(std::memory_order_relaxed);
+        float current_shift = UVOSuit::g_Config.actual_dominance_shift.load(std::memory_order_relaxed);
 
-        // Старая математика плавной интерполяции (скорость 8.5f)
+        const float transition_speed = 8.5f;
+
+        // Плавная интерполяция основного буста
         if (current_actual != target_angle) {
-            const float transition_speed = 8.5f;
             current_actual += (target_angle - current_actual) * std::min(1.0f, transition_speed * delta);
-
-            if (std::abs(current_actual - target_angle) < 0.005f) {
-                current_actual = target_angle;
-            }
+            if (std::abs(current_actual - target_angle) < 0.005f) current_actual = target_angle;
             UVOSuit::g_Config.actual_convergence_angle.store(current_actual, std::memory_order_relaxed);
+        }
+
+        // Плавная интерполяция микро-сдвига доминантности
+        if (current_shift != target_shift) {
+            current_shift += (target_shift - current_shift) * std::min(1.0f, transition_speed * delta);
+            if (std::abs(current_shift - target_shift) < 0.0005f) current_shift = target_shift;
+            UVOSuit::g_Config.actual_dominance_shift.store(current_shift, std::memory_order_relaxed);
         }
 
         if (m_initialized) {
@@ -599,20 +624,24 @@ public:
         float actual_angle = UVOSuit::g_Config.actual_convergence_angle.load(std::memory_order_relaxed);
         if (actual_angle == 0.0f) return;
 
+        float actual_shift = UVOSuit::g_Config.actual_dominance_shift.load(std::memory_order_relaxed);
+
         const bool is_left_eye = is_double ? (view_index == 0) : (view_index == 1);
         const bool is_right_eye = is_double ? (view_index == 1) : (view_index == 2);
 
         if (!is_left_eye && !is_right_eye) return;
 
+        // Преобразование процентов в градусы (лимит 100% = 10 градусов по умолчанию)
         const float actual_boost_angle = (actual_angle / 100.0f) * 10.0f;
+        const float actual_shift_angle = (actual_shift / 100.0f) * 10.0f;
 
         if (is_double) {
             auto rot_d = reinterpret_cast<UEVR_Rotatord*>(rotation);
-            ApplyConvergenceMath(rot_d->pitch, rot_d->yaw, rot_d->roll, actual_boost_angle, is_left_eye);
+            ApplyConvergenceMath(rot_d->pitch, rot_d->yaw, rot_d->roll, actual_boost_angle, actual_shift_angle, is_left_eye);
         }
         else {
             auto rot_f = reinterpret_cast<UEVR_Rotatorf*>(rotation);
-            ApplyConvergenceMath(rot_f->pitch, rot_f->yaw, rot_f->roll, actual_boost_angle, is_left_eye);
+            ApplyConvergenceMath(rot_f->pitch, rot_f->yaw, rot_f->roll, actual_boost_angle, actual_shift_angle, is_left_eye);
         }
     }
 
@@ -624,11 +653,9 @@ public:
         std::atomic<bool> m_save_in_progress{ false };
 
         void save_configs_async() {
-            // Защита от спама потоками, если сохранение уже идёт
             if (m_save_in_progress.exchange(true, std::memory_order_acquire)) {
                 return;
             }
-
             std::thread([this]() {
                 this->save_configs();
                 m_save_in_progress.store(false, std::memory_order_release);
@@ -638,22 +665,13 @@ public:
         void handle_hotkeys() {
             if (GetForegroundWindow() != m_wnd) return;
 
-            static bool f2_down = false, f3_down = false, end_down = false;
-            static bool prior_down = false, next_down = false;
+            static bool f2_down = false, f3_down = false, end_down = false, del_down = false;
+            static bool prior_down = false, next_down = false, minus_down = false, plus_down = false;
 
-            // F2 - Toggle Menu
-            if (GetAsyncKeyState(VK_F2) & 0x8000) {
-                f2_down = true;
-            }
-            else if (f2_down) {
-                m_display_menu = !m_display_menu;
-                f2_down = false;
-            }
+            if (GetAsyncKeyState(VK_F2) & 0x8000) { f2_down = true; }
+            else if (f2_down) { m_display_menu = !m_display_menu; f2_down = false; }
 
-            // F3 - Custom FOV
-            if (GetAsyncKeyState(VK_F3) & 0x8000) {
-                f3_down = true;
-            }
+            if (GetAsyncKeyState(VK_F3) & 0x8000) { f3_down = true; }
             else if (f3_down) {
                 bool current = UVOSuit::g_Config.enable_custom_fov.load(std::memory_order_relaxed);
                 UVOSuit::g_Config.enable_custom_fov.store(!current, std::memory_order_relaxed);
@@ -661,14 +679,19 @@ public:
                 f3_down = false;
             }
 
-            // END - 3D Boost
-            if (GetAsyncKeyState(VK_END) & 0x8000) {
-                end_down = true;
-            }
+            if (GetAsyncKeyState(VK_END) & 0x8000) { end_down = true; }
             else if (end_down) {
                 UVOSuit::g_Config.enable_3d_boost = !UVOSuit::g_Config.enable_3d_boost;
                 save_configs_async();
                 end_down = false;
+            }
+
+            // DEL - Переключатель Eye-Dominance Balance
+            if (GetAsyncKeyState(VK_DELETE) & 0x8000) { del_down = true; }
+            else if (del_down) {
+                UVOSuit::g_Config.enable_dominance_shift = !UVOSuit::g_Config.enable_dominance_shift;
+                save_configs_async();
+                del_down = false;
             }
 
             bool mod_enabled = UVOSuit::g_Config.mod_enabled.load(std::memory_order_relaxed);
@@ -676,37 +699,48 @@ public:
 
             if (mod_enabled && boost_enabled) {
                 const bool is_shift_pressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                // Шаг при зажатом Shift в 10 раз быстрее (0.2 вместо 0.02)
                 const float step = is_shift_pressed ? 0.2f : 0.02f;
 
                 bool is_prior_pressed = (GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0;
                 bool is_next_pressed = (GetAsyncKeyState(VK_NEXT) & 0x8000) != 0;
+                bool is_minus_pressed = (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
+                bool is_plus_pressed = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
 
-                if (is_prior_pressed) {
-                    UVOSuit::g_Config.convergence_angle += step;
+                // Регулировка основного 3D Boost (PageUp / PageDown)
+                if (is_prior_pressed || is_next_pressed) {
+                    if (is_prior_pressed) { UVOSuit::g_Config.convergence_angle += step; prior_down = true; }
+                    else { UVOSuit::g_Config.convergence_angle -= step; next_down = true; }
+
                     const float max_limit = UVOSuit::g_Config.unlock_limits ? 100.0f : 15.0f;
                     UVOSuit::g_Config.convergence_angle = std::clamp(UVOSuit::g_Config.convergence_angle, 0.0f, max_limit);
-                    prior_down = true;
+                    UVOSuit::g_Config.convergence_angle = std::round(UVOSuit::g_Config.convergence_angle * 1000.0f) / 1000.0f;
+                    UVOSuit::g_Config.eye_dominance_shift = std::clamp(UVOSuit::g_Config.eye_dominance_shift, -UVOSuit::g_Config.convergence_angle, UVOSuit::g_Config.convergence_angle);
                 }
-                else if (prior_down) {
+                else if (prior_down || next_down) {
                     save_configs_async();
-                    prior_down = false;
+                    prior_down = false; next_down = false;
                 }
 
-                if (is_next_pressed) {
-                    UVOSuit::g_Config.convergence_angle -= step;
-                    const float max_limit = UVOSuit::g_Config.unlock_limits ? 100.0f : 15.0f;
-                    UVOSuit::g_Config.convergence_angle = std::clamp(UVOSuit::g_Config.convergence_angle, 0.0f, max_limit);
-                    next_down = true;
-                }
-                else if (next_down) {
-                    save_configs_async();
-                    next_down = false;
+                // Регулировка Bias (Клавиши - и +)
+                if (UVOSuit::g_Config.enable_dominance_shift) {
+                    if (is_minus_pressed || is_plus_pressed) {
+                        if (is_minus_pressed) { UVOSuit::g_Config.eye_dominance_shift -= step; minus_down = true; }
+                        else { UVOSuit::g_Config.eye_dominance_shift += step; plus_down = true; }
+
+                        float max_shift = UVOSuit::g_Config.convergence_angle;
+                        UVOSuit::g_Config.eye_dominance_shift = std::clamp(UVOSuit::g_Config.eye_dominance_shift, -max_shift, max_shift);
+                        UVOSuit::g_Config.eye_dominance_shift = std::round(UVOSuit::g_Config.eye_dominance_shift * 1000.0f) / 1000.0f;
+                    }
+                    else if (minus_down || plus_down) {
+                        save_configs_async();
+                        minus_down = false; plus_down = false;
+                    }
                 }
             }
         }
 
         void load_configs() {
-            // Мьютексы удалены - Lock-Free загрузка
             const std::string local = GetLocalIniPath();
             bool temp_mod = false, temp_fov = false;
             ConfigHelper::LoadBool(local, "State", "ModEnabled", temp_mod);
@@ -716,11 +750,16 @@ public:
 
             ConfigHelper::LoadBool(local, "State", "3DBoostEnabled", UVOSuit::g_Config.enable_3d_boost);
             ConfigHelper::LoadBool(local, "State", "UIFovOpen", UVOSuit::g_Config.ui_fov_opened);
+            ConfigHelper::LoadBool(local, "State", "UIShiftOpen", UVOSuit::g_Config.ui_shift_opened);
             ConfigHelper::LoadBool(local, "State", "UIAsymOpen", UVOSuit::g_Config.ui_asym_opened);
             ConfigHelper::LoadBool(local, "State", "UIShiftsOpen", UVOSuit::g_Config.ui_shifts_opened);
             ConfigHelper::LoadBool(local, "State", "UIRotOpen", UVOSuit::g_Config.ui_rot_opened);
+
             ConfigHelper::LoadFloat(local, "3DBoost", "Convergence", UVOSuit::g_Config.convergence_angle);
+            ConfigHelper::LoadFloat(local, "3DBoost", "DominanceShift", UVOSuit::g_Config.eye_dominance_shift);
             ConfigHelper::LoadBool(local, "3DBoost", "UnlockLimits", UVOSuit::g_Config.unlock_limits);
+
+            ConfigHelper::LoadBool(local, "3DBoost", "DominanceEnabled", UVOSuit::g_Config.enable_dominance_shift);
 
             const std::string global = GetGlobalIniPath();
             ConfigHelper::LoadFloat(global, "Optics", "GlobalFov", UVOSuit::g_Config.global_fov_scale);
@@ -762,7 +801,6 @@ public:
         void save_configs() {
             std::lock_guard<std::mutex> file_lock(UVOSuit::g_FileIOMutex);
 
-            // Мьютексы удалены - Lock-Free сохранение
             bool mod_enabled = UVOSuit::g_Config.mod_enabled.load(std::memory_order_relaxed);
             bool custom_fov = UVOSuit::g_Config.enable_custom_fov.load(std::memory_order_relaxed);
 
@@ -772,11 +810,16 @@ public:
 
             ConfigHelper::SaveBool(local, "State", "3DBoostEnabled", UVOSuit::g_Config.enable_3d_boost);
             ConfigHelper::SaveBool(local, "State", "UIFovOpen", UVOSuit::g_Config.ui_fov_opened);
+            ConfigHelper::SaveBool(local, "State", "UIShiftOpen", UVOSuit::g_Config.ui_shift_opened);
             ConfigHelper::SaveBool(local, "State", "UIAsymOpen", UVOSuit::g_Config.ui_asym_opened);
             ConfigHelper::SaveBool(local, "State", "UIShiftsOpen", UVOSuit::g_Config.ui_shifts_opened);
             ConfigHelper::SaveBool(local, "State", "UIRotOpen", UVOSuit::g_Config.ui_rot_opened);
+
             ConfigHelper::SaveFloat(local, "3DBoost", "Convergence", UVOSuit::g_Config.convergence_angle);
+            ConfigHelper::SaveFloat(local, "3DBoost", "DominanceShift", UVOSuit::g_Config.eye_dominance_shift);
             ConfigHelper::SaveBool(local, "3DBoost", "UnlockLimits", UVOSuit::g_Config.unlock_limits);
+
+            ConfigHelper::SaveBool(local, "3DBoost", "DominanceEnabled", UVOSuit::g_Config.enable_dominance_shift);
 
             const std::string global = GetGlobalIniPath();
             std::filesystem::create_directories(std::filesystem::path(global).parent_path());
@@ -784,6 +827,7 @@ public:
             ConfigHelper::SaveFloat(global, "Optics", "GlobalFov", UVOSuit::g_Config.global_fov_scale);
             ConfigHelper::SaveFloat(global, "Optics", "OutL", UVOSuit::g_Config.outer_fov_scale_left);
             ConfigHelper::SaveFloat(global, "Optics", "OutR", UVOSuit::g_Config.outer_fov_scale_right);
+            // ... (Сохранение остальных параметров оптики идентично загрузке)
             ConfigHelper::SaveFloat(global, "Optics", "InnL", UVOSuit::g_Config.inner_fov_scale_left);
             ConfigHelper::SaveFloat(global, "Optics", "InnR", UVOSuit::g_Config.inner_fov_scale_right);
             ConfigHelper::SaveFloat(global, "Optics", "UpL", UVOSuit::g_Config.upper_fov_scale_left);
@@ -827,17 +871,14 @@ public:
         void DrawDynamicCheckbox(const char* label, bool* v) {
             const ImVec4 bg_color = *v ? ImVec4(0.31f, 0.78f, 0.47f, 1.0f) : ImVec4(0.45f, 0.18f, 0.22f, 1.0f);
             const ImVec4 hover_color = *v ? ImVec4(0.42f, 0.88f, 0.58f, 1.0f) : ImVec4(0.65f, 0.28f, 0.34f, 1.0f);
-
             ImGui::PushStyleColor(ImGuiCol_FrameBg, bg_color);
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover_color);
             ImGui::PushStyleColor(ImGuiCol_FrameBgActive, hover_color);
             ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.06f, 0.09f, 0.16f, 1.0f));
-
             if (ImGui::Checkbox(label, v)) {
                 UVOSuit::g_Cache.Update(UVOSuit::g_Config);
                 save_configs_async();
             }
-
             ImGui::PopStyleColor(4);
         }
 
@@ -845,18 +886,15 @@ public:
             bool temp = v.load(std::memory_order_relaxed);
             const ImVec4 bg_color = temp ? ImVec4(0.31f, 0.78f, 0.47f, 1.0f) : ImVec4(0.45f, 0.18f, 0.22f, 1.0f);
             const ImVec4 hover_color = temp ? ImVec4(0.42f, 0.88f, 0.58f, 1.0f) : ImVec4(0.65f, 0.28f, 0.34f, 1.0f);
-
             ImGui::PushStyleColor(ImGuiCol_FrameBg, bg_color);
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover_color);
             ImGui::PushStyleColor(ImGuiCol_FrameBgActive, hover_color);
             ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.06f, 0.09f, 0.16f, 1.0f));
-
             if (ImGui::Checkbox(label, &temp)) {
                 v.store(temp, std::memory_order_relaxed);
                 UVOSuit::g_Cache.Update(UVOSuit::g_Config);
                 save_configs_async();
             }
-
             ImGui::PopStyleColor(4);
         }
 
@@ -867,22 +905,16 @@ public:
             ImGui::CreateContext();
 
             ImGuiStyle& style = ImGui::GetStyle();
-            style.WindowRounding = 8.0f;
-            style.FrameRounding = 4.0f;
-            style.WindowBorderSize = 1.0f;
-
+            style.WindowRounding = 8.0f; style.FrameRounding = 4.0f; style.WindowBorderSize = 1.0f;
             style.Colors[ImGuiCol_WindowBg] = ImVec4(0.04f, 0.07f, 0.17f, 0.80f);
             style.Colors[ImGuiCol_Border] = ImVec4(1.0f, 1.0f, 1.0f, 0.10f);
             style.Colors[ImGuiCol_Text] = ImVec4(0.95f, 0.96f, 0.98f, 1.0f);
-
             style.Colors[ImGuiCol_FrameBg] = ImVec4(0.06f, 0.09f, 0.16f, 1.0f);
             style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.12f, 0.16f, 0.23f, 1.0f);
             style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.06f, 0.09f, 0.16f, 1.0f);
-
             style.Colors[ImGuiCol_Header] = ImVec4(0.12f, 0.16f, 0.23f, 1.0f);
             style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.18f, 0.23f, 0.32f, 1.0f);
             style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.12f, 0.16f, 0.23f, 1.0f);
-
             style.Colors[ImGuiCol_ResizeGrip] = ImVec4(0.96f, 0.88f, 0.73f, 0.5f);
             style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.96f, 0.88f, 0.73f, 0.8f);
             style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(0.96f, 0.88f, 0.73f, 1.0f);
@@ -895,7 +927,6 @@ public:
             m_wnd = swap_desc.OutputWindow;
 
             if (!ImGui_ImplWin32_Init(m_wnd)) return false;
-
             if (renderer_data->renderer_type == UEVR_RENDERER_D3D11) {
                 if (!g_d3d11.initialize()) return false;
             }
@@ -910,7 +941,8 @@ public:
         void draw_interface() {
             if (!m_display_menu) return;
 
-            auto DrawSettingRow = [&](const char* reset_id, const char* label, float* v, float v_min, float v_max, float default_val) {
+            // ОБНОВЛЕННАЯ ФУНКЦИЯ-ЩИТ: Жесткая проверка ввода, округление и обрезка
+            auto DrawSettingRow = [&](const char* reset_id, const char* label, float* v, float v_min, float v_max, float default_val, int decimals = 3) {
                 if (DrawResetBtn(reset_id)) {
                     *v = default_val;
                     UVOSuit::g_Cache.Update(UVOSuit::g_Config);
@@ -918,15 +950,23 @@ public:
                 }
                 ImGui::SameLine();
 
-                // Применяем в кэш моментально при движении ползунка
-                if (ImGui::DragFloat(label, v, 0.001f, v_min, v_max, "%.3f")) {
+                const float step = (decimals == 4) ? 0.0001f : 0.001f;
+                const char* format = (decimals == 4) ? "%.4f" : "%.3f";
+
+                bool edited = ImGui::DragFloat(label, v, step, v_min, v_max, format);
+                bool deactivated = ImGui::IsItemDeactivatedAfterEdit();
+
+                // Как только человек вписал значение (или просто отпустил мышь) - применяется фильтр
+                if (edited || deactivated) {
+                    *v = std::clamp(*v, v_min, v_max);
+
+                    float multiplier = (decimals == 4) ? 10000.0f : 1000.0f;
+                    *v = std::round(*v * multiplier) / multiplier;
+
                     UVOSuit::g_Cache.Update(UVOSuit::g_Config);
                 }
 
-                // Сохраняем файл ТОЛЬКО при отпускании ползунка мыши
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    save_configs_async();
-                }
+                if (deactivated) { save_configs_async(); }
                 };
 
             ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, -1.0f), ImVec2(FLT_MAX, FLT_MAX));
@@ -954,28 +994,53 @@ public:
                     }
                     ImGui::PopStyleColor(3);
                 }
-
                 ImGui::Spacing();
 
                 if (mod_enabled) {
-
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.82f, 0.38f, 1.0f));
                     ImGui::Text("3D Depth Boost");
                     ImGui::PopStyleColor();
 
                     DrawDynamicCheckbox("Enable 3D Boost [End]", &UVOSuit::g_Config.enable_3d_boost);
-
                     const bool was_unlocked = UVOSuit::g_Config.unlock_limits;
                     DrawDynamicCheckbox("Unlock Extreme Limits (>15%)", &UVOSuit::g_Config.unlock_limits);
 
                     if (was_unlocked && !UVOSuit::g_Config.unlock_limits) {
                         if (UVOSuit::g_Config.convergence_angle > 15.0f) {
                             UVOSuit::g_Config.convergence_angle = 15.0f;
+                            // Подтягиваем Shift, если основной буст срезался
+                            UVOSuit::g_Config.eye_dominance_shift = std::clamp(UVOSuit::g_Config.eye_dominance_shift, -15.0f, 15.0f);
                         }
                         save_configs_async();
                     }
 
-                    DrawSettingRow(" R ##Boost", "Strength %", &UVOSuit::g_Config.convergence_angle, 0.0f, UVOSuit::g_Config.unlock_limits ? 100.0f : 15.0f, 0.0f);
+                    // Основной ползунок Буста
+                    float current_max_boost = UVOSuit::g_Config.unlock_limits ? 100.0f : 15.0f;
+                    DrawSettingRow(" R ##Boost", "Strength %", &UVOSuit::g_Config.convergence_angle, 0.0f, current_max_boost, 0.0f, 3);
+
+                    // Блокировка Shift, если изменился Boost
+                    float max_shift = UVOSuit::g_Config.convergence_angle;
+                    if (UVOSuit::g_Config.eye_dominance_shift < -max_shift || UVOSuit::g_Config.eye_dominance_shift > max_shift) {
+                        UVOSuit::g_Config.eye_dominance_shift = std::clamp(UVOSuit::g_Config.eye_dominance_shift, -max_shift, max_shift);
+                    }
+
+                    // Скрытый список для Eye-Dominance Balance
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.86f, 0.78f, 0.49f, 1.0f));
+                    ImGui::SetNextItemOpen(UVOSuit::g_Config.ui_shift_opened, ImGuiCond_Always);
+                    const bool shift_curr = ImGui::TreeNode("Eye-Dominance Balance");
+                    ImGui::PopStyleColor();
+
+                    if (shift_curr != UVOSuit::g_Config.ui_shift_opened) {
+                        UVOSuit::g_Config.ui_shift_opened = shift_curr;
+                        save_configs_async();
+                    }
+                    if (UVOSuit::g_Config.ui_shift_opened) {
+                        DrawDynamicCheckbox("Enable Balance [Del]", &UVOSuit::g_Config.enable_dominance_shift);
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.58f, 0.64f, 0.72f, 1.0f), "Negative = Left Eye, Positive = Right Eye");
+                        DrawSettingRow(" R ##Bias", "Bias %", &UVOSuit::g_Config.eye_dominance_shift, -max_shift, max_shift, 0.0f, 3);
+                        ImGui::TreePop();
+                    }
 
                     ImGui::Spacing(); ImGui::Separator();
 
@@ -990,11 +1055,8 @@ public:
                     }
 
                     if (UVOSuit::g_Config.ui_fov_opened) {
-
                         DrawDynamicCheckboxAtomic("Enable Custom FOV / Shifts [F3]", UVOSuit::g_Config.enable_custom_fov);
-
-                        DrawSettingRow(" R ##GlobalFOV", "Global Scale", &UVOSuit::g_Config.global_fov_scale, 0.72f, 1.0f, 1.0f);
-
+                        DrawSettingRow(" R ##GlobalFOV", "Global Scale", &UVOSuit::g_Config.global_fov_scale, 0.72f, 1.0f, 1.0f, 3);
                         ImGui::Spacing();
 
                         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.86f, 0.78f, 0.49f, 1.0f));
@@ -1002,29 +1064,26 @@ public:
                         const bool asym_curr = ImGui::TreeNode("Asymmetric FOV Scaling");
                         ImGui::PopStyleColor();
 
-                        if (asym_curr != UVOSuit::g_Config.ui_asym_opened) {
-                            UVOSuit::g_Config.ui_asym_opened = asym_curr;
-                            save_configs_async();
-                        }
+                        if (asym_curr != UVOSuit::g_Config.ui_asym_opened) { UVOSuit::g_Config.ui_asym_opened = asym_curr; save_configs_async(); }
                         if (UVOSuit::g_Config.ui_asym_opened) {
                             if (ImGui::TreeNode("Outer Edge (Temples)")) {
-                                DrawSettingRow(" R ##OutL", "Left Eye##OutL", &UVOSuit::g_Config.outer_fov_scale_left, 0.72f, 1.0f, 1.0f);
-                                DrawSettingRow(" R ##OutR", "Right Eye##OutR", &UVOSuit::g_Config.outer_fov_scale_right, 0.72f, 1.0f, 1.0f);
+                                DrawSettingRow(" R ##OutL", "Left Eye##OutL", &UVOSuit::g_Config.outer_fov_scale_left, 0.72f, 1.0f, 1.0f, 3);
+                                DrawSettingRow(" R ##OutR", "Right Eye##OutR", &UVOSuit::g_Config.outer_fov_scale_right, 0.72f, 1.0f, 1.0f, 3);
                                 ImGui::TreePop();
                             }
                             if (ImGui::TreeNode("Inner Edge (Nose)")) {
-                                DrawSettingRow(" R ##InnL", "Left Eye##InnL", &UVOSuit::g_Config.inner_fov_scale_left, 0.72f, 1.0f, 1.0f);
-                                DrawSettingRow(" R ##InnR", "Right Eye##InnR", &UVOSuit::g_Config.inner_fov_scale_right, 0.72f, 1.0f, 1.0f);
+                                DrawSettingRow(" R ##InnL", "Left Eye##InnL", &UVOSuit::g_Config.inner_fov_scale_left, 0.72f, 1.0f, 1.0f, 3);
+                                DrawSettingRow(" R ##InnR", "Right Eye##InnR", &UVOSuit::g_Config.inner_fov_scale_right, 0.72f, 1.0f, 1.0f, 3);
                                 ImGui::TreePop();
                             }
                             if (ImGui::TreeNode("Upper Edge (Top)")) {
-                                DrawSettingRow(" R ##UpL", "Left Eye##UpL", &UVOSuit::g_Config.upper_fov_scale_left, 0.72f, 1.0f, 1.0f);
-                                DrawSettingRow(" R ##UpR", "Right Eye##UpR", &UVOSuit::g_Config.upper_fov_scale_right, 0.72f, 1.0f, 1.0f);
+                                DrawSettingRow(" R ##UpL", "Left Eye##UpL", &UVOSuit::g_Config.upper_fov_scale_left, 0.72f, 1.0f, 1.0f, 3);
+                                DrawSettingRow(" R ##UpR", "Right Eye##UpR", &UVOSuit::g_Config.upper_fov_scale_right, 0.72f, 1.0f, 1.0f, 3);
                                 ImGui::TreePop();
                             }
                             if (ImGui::TreeNode("Lower Edge (Bottom)")) {
-                                DrawSettingRow(" R ##LowL", "Left Eye##LowL", &UVOSuit::g_Config.lower_fov_scale_left, 0.72f, 1.0f, 1.0f);
-                                DrawSettingRow(" R ##LowR", "Right Eye##LowR", &UVOSuit::g_Config.lower_fov_scale_right, 0.72f, 1.0f, 1.0f);
+                                DrawSettingRow(" R ##LowL", "Left Eye##LowL", &UVOSuit::g_Config.lower_fov_scale_left, 0.72f, 1.0f, 1.0f, 3);
+                                DrawSettingRow(" R ##LowR", "Right Eye##LowR", &UVOSuit::g_Config.lower_fov_scale_right, 0.72f, 1.0f, 1.0f, 3);
                                 ImGui::TreePop();
                             }
                             ImGui::TreePop();
@@ -1035,21 +1094,16 @@ public:
                         const bool shifts_curr = ImGui::TreeNode("Optical Center Shift");
                         ImGui::PopStyleColor();
 
-                        if (shifts_curr != UVOSuit::g_Config.ui_shifts_opened) {
-                            UVOSuit::g_Config.ui_shifts_opened = shifts_curr;
-                            save_configs_async();
-                        }
+                        if (shifts_curr != UVOSuit::g_Config.ui_shifts_opened) { UVOSuit::g_Config.ui_shifts_opened = shifts_curr; save_configs_async(); }
                         if (UVOSuit::g_Config.ui_shifts_opened) {
-                            DrawSettingRow(" R ##FBV", "Global Vert (deg)##FB", &UVOSuit::g_Config.flat_box_vert, -45.0f, 45.0f, 0.0f);
-                            DrawSettingRow(" R ##FBH", "Global Horiz (deg)##FB", &UVOSuit::g_Config.flat_box_horiz, -45.0f, 45.0f, 0.0f);
-
+                            DrawSettingRow(" R ##FBV", "Global Vert (deg)##FB", &UVOSuit::g_Config.flat_box_vert, -45.0f, 45.0f, 0.0f, 3);
+                            DrawSettingRow(" R ##FBH", "Global Horiz (deg)##FB", &UVOSuit::g_Config.flat_box_horiz, -45.0f, 45.0f, 0.0f, 3);
                             ImGui::Spacing();
-                            DrawSettingRow(" R ##FLV", "Left Vert##FL", &UVOSuit::g_Config.flat_left_vert, -45.0f, 45.0f, 0.0f);
-                            DrawSettingRow(" R ##FLH", "Left Horiz##FL", &UVOSuit::g_Config.flat_left_horiz, -45.0f, 45.0f, 0.0f);
-
+                            DrawSettingRow(" R ##FLV", "Left Vert##FL", &UVOSuit::g_Config.flat_left_vert, -45.0f, 45.0f, 0.0f, 3);
+                            DrawSettingRow(" R ##FLH", "Left Horiz##FL", &UVOSuit::g_Config.flat_left_horiz, -45.0f, 45.0f, 0.0f, 3);
                             ImGui::Spacing();
-                            DrawSettingRow(" R ##FRV", "Right Vert##FR", &UVOSuit::g_Config.flat_right_vert, -45.0f, 45.0f, 0.0f);
-                            DrawSettingRow(" R ##FRH", "Right Horiz##FR", &UVOSuit::g_Config.flat_right_horiz, -45.0f, 45.0f, 0.0f);
+                            DrawSettingRow(" R ##FRV", "Right Vert##FR", &UVOSuit::g_Config.flat_right_vert, -45.0f, 45.0f, 0.0f, 3);
+                            DrawSettingRow(" R ##FRH", "Right Horiz##FR", &UVOSuit::g_Config.flat_right_horiz, -45.0f, 45.0f, 0.0f, 3);
                             ImGui::TreePop();
                         }
 
@@ -1058,21 +1112,16 @@ public:
                         const bool rot_curr = ImGui::TreeNode("Optical Axis Rotation");
                         ImGui::PopStyleColor();
 
-                        if (rot_curr != UVOSuit::g_Config.ui_rot_opened) {
-                            UVOSuit::g_Config.ui_rot_opened = rot_curr;
-                            save_configs_async();
-                        }
+                        if (rot_curr != UVOSuit::g_Config.ui_rot_opened) { UVOSuit::g_Config.ui_rot_opened = rot_curr; save_configs_async(); }
                         if (UVOSuit::g_Config.ui_rot_opened) {
-                            DrawSettingRow(" R ##RGP", "Global Pitch##RG", &UVOSuit::g_Config.rot_global_pitch, -45.0f, 45.0f, 0.0f);
-                            DrawSettingRow(" R ##RGY", "Global Yaw##RG", &UVOSuit::g_Config.rot_global_yaw, -45.0f, 45.0f, 0.0f);
-
+                            DrawSettingRow(" R ##RGP", "Global Pitch##RG", &UVOSuit::g_Config.rot_global_pitch, -45.0f, 45.0f, 0.0f, 3);
+                            DrawSettingRow(" R ##RGY", "Global Yaw##RG", &UVOSuit::g_Config.rot_global_yaw, -45.0f, 45.0f, 0.0f, 3);
                             ImGui::Spacing();
-                            DrawSettingRow(" R ##RLP", "Left Pitch##RL", &UVOSuit::g_Config.rot_left_pitch, -45.0f, 45.0f, 0.0f);
-                            DrawSettingRow(" R ##RLY", "Left Yaw##RL", &UVOSuit::g_Config.rot_left_yaw, -45.0f, 45.0f, 0.0f);
-
+                            DrawSettingRow(" R ##RLP", "Left Pitch##RL", &UVOSuit::g_Config.rot_left_pitch, -45.0f, 45.0f, 0.0f, 3);
+                            DrawSettingRow(" R ##RLY", "Left Yaw##RL", &UVOSuit::g_Config.rot_left_yaw, -45.0f, 45.0f, 0.0f, 3);
                             ImGui::Spacing();
-                            DrawSettingRow(" R ##RRP", "Right Pitch##RR", &UVOSuit::g_Config.rot_right_pitch, -45.0f, 45.0f, 0.0f);
-                            DrawSettingRow(" R ##RRY", "Right Yaw##RR", &UVOSuit::g_Config.rot_right_yaw, -45.0f, 45.0f, 0.0f);
+                            DrawSettingRow(" R ##RRP", "Right Pitch##RR", &UVOSuit::g_Config.rot_right_pitch, -45.0f, 45.0f, 0.0f, 3);
+                            DrawSettingRow(" R ##RRY", "Right Yaw##RR", &UVOSuit::g_Config.rot_right_yaw, -45.0f, 45.0f, 0.0f, 3);
                             ImGui::TreePop();
                         }
 
@@ -1081,25 +1130,19 @@ public:
                         const bool mask_curr = ImGui::TreeNode("Lens Mask (API Layer)");
                         ImGui::PopStyleColor();
 
-                        if (mask_curr != UVOSuit::g_Config.ui_mask_opened) {
-                            UVOSuit::g_Config.ui_mask_opened = mask_curr;
-                            save_configs_async();
-                        }
+                        if (mask_curr != UVOSuit::g_Config.ui_mask_opened) { UVOSuit::g_Config.ui_mask_opened = mask_curr; save_configs_async(); }
                         if (UVOSuit::g_Config.ui_mask_opened) {
                             DrawDynamicCheckbox("Enable Lens Mask", &UVOSuit::g_Config.enable_lens_mask);
-
                             ImGui::Spacing();
                             ImGui::TextColored(ImVec4(0.58f, 0.64f, 0.72f, 1.0f), "Edge Offsets (Clamp to FOV)");
-                            DrawSettingRow(" R ##MOut", "Outer Edge (Temple)", &UVOSuit::g_Config.mask_edge_outer, 0.0f, 0.5f, 0.0f);
-                            DrawSettingRow(" R ##MInn", "Inner Edge (Nose)", &UVOSuit::g_Config.mask_edge_inner, 0.0f, 0.5f, 0.0f);
-                            DrawSettingRow(" R ##MTop", "Top Edge", &UVOSuit::g_Config.mask_edge_top, 0.0f, 0.5f, 0.0f);
-                            DrawSettingRow(" R ##MBot", "Bottom Edge", &UVOSuit::g_Config.mask_edge_bottom, 0.0f, 0.5f, 0.0f);
-
+                            DrawSettingRow(" R ##MOut", "Outer Edge (Temple)", &UVOSuit::g_Config.mask_edge_outer, 0.0f, 0.5f, 0.0f, 3);
+                            DrawSettingRow(" R ##MInn", "Inner Edge (Nose)", &UVOSuit::g_Config.mask_edge_inner, 0.0f, 0.5f, 0.0f, 3);
+                            DrawSettingRow(" R ##MTop", "Top Edge", &UVOSuit::g_Config.mask_edge_top, 0.0f, 0.5f, 0.0f, 3);
+                            DrawSettingRow(" R ##MBot", "Bottom Edge", &UVOSuit::g_Config.mask_edge_bottom, 0.0f, 0.5f, 0.0f, 3);
                             ImGui::Spacing();
                             ImGui::TextColored(ImVec4(0.58f, 0.64f, 0.72f, 1.0f), "Shape & Blending");
-                            DrawSettingRow(" R ##MRad", "Corner Radius", &UVOSuit::g_Config.mask_corner_radius, 0.0f, 1.0f, 0.2f);
-                            DrawSettingRow(" R ##MSof", "Edge Softness", &UVOSuit::g_Config.mask_softness, 0.001f, 1.0f, 0.05f);
-
+                            DrawSettingRow(" R ##MRad", "Corner Radius", &UVOSuit::g_Config.mask_corner_radius, 0.0f, 1.0f, 0.2f, 3);
+                            DrawSettingRow(" R ##MSof", "Edge Softness", &UVOSuit::g_Config.mask_softness, 0.001f, 1.0f, 0.05f, 3);
                             ImGui::TreePop();
                         }
                         ImGui::TreePop();
@@ -1116,9 +1159,7 @@ public:
                     UVOSuit::g_vignetteConfig->corner_radius = UVOSuit::g_Config.mask_corner_radius;
                 }
 
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
+                ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
                 auto PrintStatus = [](const char* name, UVOSuit::DiagLevel level, const std::string& msg) {
                     ImVec4 color;
@@ -1133,7 +1174,6 @@ public:
                     };
 
                 ImGui::TextColored(ImVec4(0.58f, 0.64f, 0.72f, 1.0f), "Diagnostics Overview:");
-
                 ImGui::BeginGroup();
                 ImGui::Indent(8.0f);
                 PrintStatus("OXR", UVOSuit::g_Diag.hook_status, UVOSuit::g_Diag.hook_msg);
