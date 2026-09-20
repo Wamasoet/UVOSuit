@@ -13,7 +13,7 @@
 
 ---
 
-**Ultimate VR Optics Suite (UVOSuit)** is a high-performance C++ plugin for UEVR built for users looking for deep, granular calibration over optics and stereoscopic depth.
+**Ultimate VR Optics Suite (UVOSuit)** is a high-performance C++ plugin for UEVR built for users looking for deep, granular calibration over optics and stereoscopic depth. 
 
 Rather than taking a one-size-fits-all approach, the plugin operates across two distinct rendering layers: it hooks into Unreal Engine's stereo view calculation (`on_post_calculate_stereo_view_offset`) to deliver real, physical camera convergence, while intercepting the OpenXR runtime pipeline (`xrLocateViews`) to grant low-level control over projection boundaries (asymmetric FOV, optical center shifts, and axis rotation). In addition, it communicates with an external OpenXR API Layer via shared memory to render a real-time comfort vignette.
 
@@ -48,21 +48,23 @@ Rather than taking a one-size-fits-all approach, the plugin operates across two 
 
 ### ✨ Features
 
+* ⚡ **Zero-Stutter Lock-Free Architecture:**  
+  The plugin utilizes a completely lock-free design for its OpenXR rendering path. By leveraging `std::atomic` variables for cache reading, UVOSuit guarantees zero mutex contention or micro-stutters in the headset, maintaining absolute frame pacing even during aggressive UI adjustments.
 * 🕶️ **Engine-Level 3D Depth Boost (Convergence):**
   * Fine-tune camera convergence to enhance perceived 3D depth and volume.
   * **Head-Roll Invariance:** Convergence math (`ApplyConvergenceMath`) runs strictly in local headset space. You can tilt your head sideways at a 90-degree angle without inducing vertical disparity.
-  * **Safety Threshold & Smooth Decay:** A safe ceiling of 15% is active by default. For experimentation, you can toggle **Unlock Extreme Limits**. Disabling the toggle smoothly eases the convergence angle back down to the 15% baseline to prevent eye strain or painful ocular pressure.
+  * **Safety Threshold & Smooth Decay:** A safe ceiling of 15% is active by default. For experimentation, you can toggle **Unlock Extreme Limits**. Disabling the toggle instantly caps the target angle, while the rendering engine smoothly eases the convergence back to the 15% baseline to prevent eye strain.
 * 📐 **Comprehensive FOV Scaling (OpenXR):**
   * Global scaling along with isolated margin controls for Outer (temples), Inner (nose), Top, and Bottom half-angles directly in `XrFovf`.
   * *PPD Boost Note:* Narrowing the FOV forces the runtime to map the game's full render resolution into a tighter physical footprint, noticeably increasing perceived PPD (pixels per degree) and image clarity in your focal area. Unrendered regions outside the modified frustum remain black borders.
 * 🌑 **Lens Mask (API Layer Vignette):**
   * An optical stencil rendered on top of the final output via an independent OpenXR API Layer. It masks and smooths out the hard rectangular edges produced by aggressive FOV truncations.
   * Granular control over edge offsets (Outer, Inner, Top, Bottom), corner radius rounding, and feathering/edge softness.
-  * Zero-latency configuration: updates are pushed from the plugin UI to the API Layer instantly over Win32 Shared Memory (`CreateFileMappingA` / `MapViewOfFile`).
-  * **Zero Dependencies & Safe Hooking:** HLSL shaders are precompiled into bytecode, requiring zero additional DirectX redistributables from the user. The plugin also safely appends to the `XR_API_LAYER_PATH` environment variable without overwriting other active OpenXR layers (like eye tracking or VDXR).
+  * Zero-latency configuration: updates are pushed from the plugin UI to the API Layer instantly over secure Win32 Shared Memory (`CreateFileMappingA` / `MapViewOfFile`).
+  * **Zero Dependencies & Safe Hooking:** HLSL shaders are precompiled into bytecode. The plugin safely registers the `XR_API_LAYER_PATH` environment variable **only** after utilizing strict WinAPI validation (`CreateFileA` with read/write sharing) to confirm the physical presence and accessibility of the JSON and DLL files, eliminating OpenXR initialization crashes (Error -36).
 * 🎯 **Optical Center Shift:** Translate projection bounds horizontally and vertically.
 * 🔄 **Optical Axis Rotation:** Direct orientation adjustment (`XrPosef.orientation`) by multiplying the view quaternion with an optimized rotation cache (independent Pitch and Yaw per eye).
-* 📊 **Smart Diagnostics:** An integrated status monitor right in the ImGui window. It tracks whether `xrLocateViews` is actively firing, validates the IPC shared memory buffer, and prints color-coded error codes if something fails.
+* 📊 **Smart Diagnostics:** An integrated status monitor right in the ImGui window. It independently tracks and displays the real-time health of three core modules: OpenXR Hooks (OXR), IPC Shared Memory (IPC), and Layer file presence (LYR).
 
 ---
 
@@ -83,7 +85,7 @@ Rather than taking a one-size-fits-all approach, the plugin operates across two 
 
 ### 💾 Smart Persistence (I/O)
 
-Settings only flush to disk when you release the mouse button (`IsItemDeactivatedAfterEdit`), keeping the render loop free from frame drops and redundant disk writes. Configurations are split logically:
+Settings are written to disk utilizing a **thread-safe, asynchronous background process**. The save function only triggers when you release the mouse button (`IsItemDeactivatedAfterEdit`) and incorporates atomic spam-protection. This keeps the engine's render loop entirely free from frame drops and redundant disk writes.
 
 * **Per-Game Config (`UVOSuit_Local.ini`):**
   * **Path:** Located directly inside the game's dedicated UEVR profile folder (`get_persistent_dir`).
