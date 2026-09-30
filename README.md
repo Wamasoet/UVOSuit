@@ -43,7 +43,7 @@ Rather than taking a one-size-fits-all approach, the plugin operates across two 
 
 ### ✨ Features
 
-* ⚡ **Zero-Stutter Lock-Free Architecture:** The plugin utilizes a completely lock-free design for its OpenXR rendering path. By leveraging `std::atomic` variables for cache reading, UVOSuit guarantees zero mutex contention or micro-stutters in the headset, maintaining absolute frame pacing even during aggressive UI adjustments.
+* ⚡ **Zero-Stutter Lock-Free Architecture:** The plugin utilizes a completely lock-free design for its OpenXR rendering path. By leveraging `std::atomic` state variables and a mutex-free render loop, UVOSuit guarantees zero thread contention or micro-stutters in the headset, maintaining absolute frame pacing even during aggressive UI adjustments.
 * 🕶️ **Engine-Level 3D Depth Boost (Convergence):** Fine-tune camera convergence to enhance perceived 3D depth and volume.
   * **Eye-Dominance Balance (Advanced Eye Strain Relief):** Instead of forcing mathematically rigid symmetry, you can dynamically offset the optical convergence to align perfectly with your naturally dominant eye. This drastically reduces eye fatigue during long sessions by allowing your visual system to rest in its natural asymmetric state. The bias slider is strictly clamped to your current 3D Boost limits to ensure safety.
   * **Head-Roll Invariance:** Convergence math (`ApplyConvergenceMath`) runs strictly in local headset space. You can tilt your head sideways at a 90-degree angle without inducing vertical disparity.
